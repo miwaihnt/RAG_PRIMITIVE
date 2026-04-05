@@ -1,0 +1,36 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environments
+.venv/
+env/
+venv/
+ENV/
+
+# Secrets
+.env
+
+# Data (Raw & Processed)
+data/raw/
+data/processed/
+*.parquet
+*.jsonl
+*.csv
+
+# Vector Database (LanceDB)
+*.lance/
+data/lancedb/
+
+# ML Models & Cache
+models/
+.cache/
+
+# IDEs
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+README.md

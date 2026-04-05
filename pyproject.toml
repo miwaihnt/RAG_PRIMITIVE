@@ -1,0 +1,17 @@
+[project]
+name = "rag-primitive"
+version = "0.1.0"
+description = "RAG Primitive: A high-performance vector search laboratory"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "lancedb>=0.5.0",
+    "pyarrow>=14.0.0",
+    "sentence-transformers>=2.2.0",
+    "torch>=2.0.0",
+    "numpy>=1.24.0",
+    "tqdm>=4.65.0",
+    "pydantic>=2.0.0",
+    "pydantic-settings>=2.13.1",
+    "tenacity>=9.1.4",
+]

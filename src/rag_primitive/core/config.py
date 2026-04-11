@@ -12,6 +12,9 @@ class Settings(BaseSettings):
     
     # ターゲットの会議ID (デフォルト)
     TARGET_ISSUE_ID: str = "122104339X00320260312"
+
+    # Embedding Settings
+    EMBEDDING_MODEL_NAME: str = "intfloat/multilingual-e5-small"
     
     # Data Path Settings
     PROJECT_ROOT: Path = Path(__file__).resolve().parent.parent.parent.parent

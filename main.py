@@ -1,142 +1,164 @@
 import asyncio
 import logging
-import json
+import time
 from pathlib import Path
 from typing import Optional, List, Generator
 import pyarrow as pa
 import pyarrow.parquet as pq
+import numpy as np
 
-from rag_primitive.core.config import settings
+from rag_primitive.core.config import settings, setup_directories
 from rag_primitive.core.logging import setup_logging
 from rag_primitive.core.utils import batch_iterator
 from rag_primitive.acquisition.crawler import NDLCrawler
 from rag_primitive.processing.chunker import SpeechChunker
 from rag_primitive.embedding.model import SpeechEmbedder
+from rag_primitive.storage.lancedb_client import LanceDBClient
 from rag_primitive.schemas.speech import MeetingResponse
 from rag_primitive.schemas.chunk import Chunk
 
-# ロガーの取得
 logger = logging.getLogger("rag_primitive.main")
 
-
-async def run_phase_1(crawler: NDLCrawler, target_id: str) -> Optional[Path]:
-    """Phase 1: Acquisition (API -> Raw JSONL)"""
+async def run_phase_1(crawler: NDLCrawler) -> Path:
+    """Phase 1: Acquisition (ID or Range)"""
+    start = time.time()
     logger.info(f"[bold blue]--- Phase 1: Acquisition ---[/bold blue]")
-    path = await crawler.save_meeting_to_jsonl(target_id)
-    return path
+    if settings.TARGET_ISSUE_ID and settings.TARGET_ISSUE_ID != "YOUR_TARGET_ISSUE_ID":
+         await crawler.save_meeting_to_jsonl(settings.TARGET_ISSUE_ID)
+    else:
+         await crawler.crawl_range(settings.from_date, settings.to_date)
+    
+    elapsed = time.time() - start
+    logger.info(f"Phase 1 finished in {elapsed:.2f}s")
+    return settings.RAW_DATA_DIR
 
-
-async def run_phase_2_chunking(raw_path: Path) -> Optional[Path]:
+async def run_phase_2_chunking(raw_dir: Path):
     """Phase 2 (Part 1): Chunking (Raw JSONL -> Chunked JSONL)"""
-    logger.info(f"[bold blue]--- Phase 2: Processing (Chunking) ---[/bold blue]")
-    
-    issue_id = raw_path.stem
-    output_path = settings.PROCESSED_DATA_DIR / f"{issue_id}.chunks.jsonl"
-    
-    if output_path.exists():
-        logger.info(f"Chunked data already exists: [yellow]{output_path}[/yellow]. Skipping.")
-        return output_path
+    start = time.time()
+    logger.info(f"[bold blue]--- Phase 2-1: Chunking ---[/bold blue]")
 
     chunker = SpeechChunker()
-    chunk_count = 0
+    total_chunks = 0
+    for file in raw_dir.glob("*.jsonl"):
+        issue_id = file.stem
+        output_path = settings.PROCESSED_DATA_DIR / f"{issue_id}.chunks.jsonl"
 
-    with open(raw_path, "r", encoding="utf-8") as f_in, \
-         open(output_path, "w", encoding="utf-8") as f_out:
+        if output_path.exists():
+            continue
+
+        chunk_count = 0
+        with open(file, "r", encoding="utf-8") as f_in, \
+             open(output_path, "w", encoding="utf-8") as f_out:
+            for line in f_in:
+                if not line.strip(): continue
+                try:
+                    response = MeetingResponse.model_validate_json(line)
+                    for meeting in response.meeting_records:
+                        for chunk in chunker.generate_chunks(meeting):
+                            f_out.write(chunk.model_dump_json() + "\n")
+                            chunk_count += 1
+                except Exception as e:
+                    logger.error(f"Error processing line in {file}: {e}")
         
-        for line in f_in:
-            if not line.strip(): continue
-            response = MeetingResponse.model_validate_json(line)
-            for meeting in response.meeting_records:
-                for chunk in chunker.generate_chunks(meeting):
-                    f_out.write(chunk.model_dump_json() + "\n")
-                    chunk_count += 1
+        total_chunks += chunk_count
     
-    logger.info(f"Successfully generated [bold green]{chunk_count}[/bold green] chunks.")
-    return output_path
+    elapsed = time.time() - start
+    logger.info(f"Phase 2-1 finished in {elapsed:.2f}s (Total chunks generated: {total_chunks})")
 
-
-async def run_phase_2_embedding(chunk_path: Path) -> Optional[Path]:
+async def run_phase_2_embedding(chunk_dir: Path):
     """Phase 2 (Part 2): Embedding (Chunked JSONL -> Embedded Parquet)"""
-    logger.info(f"[bold blue]--- Phase 2: Processing (Embedding) ---[/bold blue]")
-    
-    issue_id = chunk_path.stem.split('.')[0]
-    output_path = settings.PROCESSED_DATA_DIR / f"{issue_id}.embedded.parquet"
-    
-    if output_path.exists():
-        logger.info(f"Embedded data already exists: [yellow]{output_path}[/yellow]. Skipping.")
-        return output_path
+    start = time.time()
+    logger.info(f"[bold blue]--- Phase 2-2: Embedding ---[/bold blue]")
 
-    # モデルのロード
     embedder = SpeechEmbedder()
+    client = LanceDBClient()
+    schema = client._get_schema(vector_dim=embedder.dimension)
+
+    total_embedded = 0
+    for path in chunk_dir.glob("*.chunks.jsonl"):
+        issue_id = path.name.replace(".chunks.jsonl", "")
+        output_path = settings.PROCESSED_DATA_DIR / f"{issue_id}.embedded.parquet"
     
-    chunks: List[Chunk] = []
-    vectors_list = []
+        if output_path.exists():
+            continue
 
-    # 1. チャンクを読み込むジェネレータ
-    def chunk_loader() -> Generator[Chunk, None, None]:
-        with open(chunk_path, "r", encoding="utf-8") as f:
-            for line in f:
-                yield Chunk.model_validate_json(line)
+        def chunk_loader(file_path: Path) -> Generator[Chunk, None, None]:
+            with open(file_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    yield Chunk.model_validate_json(line)
 
-    # 2. バッチ処理でベクトル化 (O(1) メモリ)
-    # チャンクを読み込み、バッチサイズごとにエンベッダーへ流す
-    for batch in batch_iterator(chunk_loader(), settings.BATCH_SIZE):
-        texts = [c.content for c in batch]
-        # 推論実行 (Torch Tensor が返ってくる)
-        embeddings_tensor = embedder.encode(texts)
-        # Arrow 変換のために CPU NumPy に変換 (ここだけはコピーが必要よ)
-        embeddings_np = embeddings_tensor.cpu().numpy()
+        chunks: List[Chunk] = []
+        vectors_list = []
+
+        for batch in batch_iterator(chunk_loader(path), settings.BATCH_SIZE):
+            texts = [c.content for c in batch]
+            embeddings_tensor = embedder.encode(texts)
+            embeddings_np = embeddings_tensor.cpu().numpy()
+            
+            chunks.extend(batch)
+            vectors_list.append(embeddings_np)
+
+        if not vectors_list:
+            continue
         
-        # 保存用にデータを溜める (1会議分ならメモリに載るわ)
-        chunks.extend(batch)
-        vectors_list.append(embeddings_np)
+        all_vectors = np.vstack(vectors_list)
+        vector_array = pa.FixedSizeListArray.from_arrays(
+            pa.array(all_vectors.flatten(), type=pa.float32()), 
+            embedder.dimension
+        )
 
-    import numpy as np
-    all_vectors = np.vstack(vectors_list)
+        table = pa.Table.from_pydict({
+            "chunk_id": [c.chunk_id for c in chunks],
+            "speech_id": [c.speech_id for c in chunks],
+            "content": [c.content for c in chunks],
+            "speaker": [c.speaker for c in chunks],
+            "date": [c.date for c in chunks],
+            "meeting_name": [c.meeting_name for c in chunks],
+            "vector": vector_array,
+        }, schema=schema)
+        
+        pq.write_table(table, output_path)
+        total_embedded += len(chunks)
 
-    # 3. PyArrow を使った格納 (Zero-copy への布石)
-    # 各フィールドを Arrow 形式に変換
-    table_data = {
-        "chunk_id": [c.chunk_id for c in chunks],
-        "speech_id": [c.speech_id for c in chunks],
-        "content": [c.content for c in chunks],
-        "speaker": [c.speaker for c in chunks],
-        "date": [c.date for c in chunks],
-        "meeting_name": [c.meeting_name for c in chunks],
-        "vector": [list(v) for v in all_vectors], # LanceDB 用の形式
-    }
+    elapsed = time.time() - start
+    logger.info(f"Phase 2-2 finished in {elapsed:.2f}s (Total chunks embedded: {total_embedded})")
+
+async def run_phase_3(embedded_dir: Path):
+    """Phase 3: Storage (Embedded Parquet -> LanceDB)"""
+    start = time.time()
+    logger.info(f"[bold blue]--- Phase 3: Storage ---[/bold blue]")
     
-    table = pa.Table.from_pydict(table_data)
-    pq.write_table(table, output_path)
-    
-    logger.info(f"Successfully embedded [bold green]{len(chunks)}[/bold green] chunks.")
-    logger.info(f"Saved to: [bold green]{output_path}[/bold green]")
-    return output_path
+    client = LanceDBClient()
+    total_upserted = 0
+    for file in embedded_dir.glob("*.embedded.parquet"):
+        table = pq.read_table(file)
+        client.upsert_data(table)
+        total_upserted += len(table)
 
+    elapsed = time.time() - start
+    logger.info(f"Phase 3 finished in {elapsed:.2f}s (Total rows upserted: {total_upserted})")
 
 async def main():
     setup_logging()
+    setup_directories()
+    
     logger.info("[bold magenta]Starting RAG Primitive End-to-End Pipeline[/bold magenta]")
 
+    total_start = time.time()
+
     crawler = NDLCrawler()
-    target_id = settings.TARGET_ISSUE_ID
+    # Phase 1: クロール
+    raw_dir = await run_phase_1(crawler)
 
-    # Step 1: Acquisition
-    raw_path = await run_phase_1(crawler, target_id)
-    if not raw_path: return
+    # Phase 2: チャンク化 & ベクトル化
+    await run_phase_2_chunking(raw_dir)
+    await run_phase_2_embedding(settings.PROCESSED_DATA_DIR)
 
-    # Step 2-1: Chunking
-    chunk_path = await run_phase_2_chunking(raw_path)
-    if not chunk_path: return
+    # Phase 3: 格納
+    await run_phase_3(settings.PROCESSED_DATA_DIR)
 
-    # Step 2-2: Embedding
-    embedded_path = await run_phase_2_embedding(chunk_path)
-    
-    if embedded_path:
-        logger.info("[bold cyan]Phase 2 Complete: Text turned into Numbers![/bold cyan]")
-    else:
-        logger.error("Phase 2 Embedding failed.")
-
+    total_elapsed = time.time() - total_start
+    logger.info(f"[bold cyan]Pipeline finished successfully! Total time: {total_elapsed:.2f}s[/bold cyan]")
 
 if __name__ == "__main__":
     try:

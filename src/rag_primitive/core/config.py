@@ -10,12 +10,20 @@ class Settings(BaseSettings):
     # API Settings
     NDL_API_BASE_URL: str = "https://kokkai.ndl.go.jp/api/meeting"
     
-    # ターゲットの会議ID (デフォルト)
-    TARGET_ISSUE_ID: str = "122104339X00320260312"
+    # ターゲットの会議ID (Noneに設定すると範囲取得が走るわよ)
+    TARGET_ISSUE_ID: str = ""
+
+    # 範囲取得
+    from_date: str = "2024-01-01"
+    to_date: str = "2024-03-31"
 
     # Embedding Settings
     EMBEDDING_MODEL_NAME: str = "intfloat/multilingual-e5-small"
     
+    # LanceDB Settings
+    LANCEDB_URI: str = "data/vector/kokkai.lance"
+    TABLE_NAME: str = "speech_chunks"
+
     # Data Path Settings
     PROJECT_ROOT: Path = Path(__file__).resolve().parent.parent.parent.parent
     DATA_DIR: Path = PROJECT_ROOT / "data"

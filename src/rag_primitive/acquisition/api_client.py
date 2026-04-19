@@ -1,10 +1,10 @@
 import httpx
 import logging
-from typing import Optional
+from typing import Optional, AsyncGenerator
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 from rag_primitive.core.config import settings
-from rag_primitive.schemas.speech import MeetingResponse
+from rag_primitive.schemas.speech import MeetingResponse, MeetingRecord
 
 logger = logging.getLogger(__name__)
 
@@ -36,41 +36,61 @@ class NDLAPIClient:
             logger.info(f"Fetching meeting data: {issue_id}")
             response = await client.get(self.base_url, params=params, timeout=30.0)
             
-            # APIエラーチェック
             if response.status_code == 404:
                 logger.warning(f"Meeting not found: {issue_id}")
                 return None
             
             response.raise_for_status()
-            
-            # JSONデコード & Pydanticバリデーション
-            # ここでレスポンスが1億件分あっても、この段階では1会議分に絞っているので
-            # メモリへのロードは許容範囲内。
             data = response.json()
             return MeetingResponse.model_validate(data)
 
     async def fetch_meetings_by_range(
-        self, 
-        from_date: str, 
-        to_date: str, 
-        start_record: int = 1,
-        max_records: int = 10
-    ) -> MeetingResponse:
+        self, from_date: str, to_date: str, start_record: int, max_records: int
+    ) -> Optional[MeetingResponse]:
         """
-        期間を指定して会議データを一括取得する。
-        (1億件スケールのための土台)
+        期間を指定して会議データを取得する（1ページ分）。
         """
         params = {
             "from": from_date,
             "until": to_date,
             "startRecord": start_record,
-            "maximumRecords": max_records,
+            "maximumRecord": max_records,
             "recordPacking": "json",
         }
 
         async with httpx.AsyncClient() as client:
             logger.info(f"Fetching meetings from {from_date} to {to_date} (start: {start_record})")
             response = await client.get(self.base_url, params=params, timeout=30.0)
-            response.raise_for_status()
             
+            if response.status_code == 404:
+                return None
+                
+            response.raise_for_status()
             return MeetingResponse.model_validate(response.json())
+
+    async def stream_meetings(
+        self, from_date: str, to_date: str, max_records_per_request: int = 10
+    ) -> AsyncGenerator[MeetingRecord, None]:
+        """
+        期間内の会議データを1件ずつ流す非同期ジェネレータ。
+        ページネーション（次ページの取得）を自動で繰り返す。
+        """
+        start_record = 1
+        
+        while True:
+            response = await self.fetch_meetings_by_range(
+                from_date, to_date, start_record, max_records_per_request
+            )
+            
+            if not response or not response.meeting_records:
+                logger.info("No more records found.")
+                break
+            
+            for record in response.meeting_records:
+                yield record
+            
+            if response.next_record_position is None:
+                logger.info("Reached the last page.")
+                break
+            
+            start_record = response.next_record_position

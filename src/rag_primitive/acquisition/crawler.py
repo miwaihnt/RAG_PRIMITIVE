@@ -1,4 +1,3 @@
-import json
 import logging
 from pathlib import Path
 from typing import Optional
@@ -7,7 +6,6 @@ from rag_primitive.acquisition.api_client import NDLAPIClient
 from rag_primitive.core.config import settings, setup_directories
 from rag_primitive.schemas.speech import MeetingResponse
 
-# rag_primitive.acquisition.crawler という階層名になる
 logger = logging.getLogger(__name__)
 
 
@@ -19,42 +17,54 @@ class NDLCrawler:
 
     def __init__(self):
         self.client = NDLAPIClient()
-        # 実行前にディレクトリがなければ作成する（シニアの気遣いよ！）
         setup_directories()
 
     async def save_meeting_to_jsonl(self, issue_id: str) -> Optional[Path]:
         """
-        特定の会議IDを指定して取得し、data/raw/issue_id.jsonl に保存する。
+        特定の会議IDを直接指定して取得し、保存する。
         """
-        # 保存先パスの決定
         output_path = settings.RAW_DATA_DIR / f"{issue_id}.jsonl"
 
-        # すでに存在する場合はスキップ ( Idempotency / べき等性 )
         if output_path.exists():
-            logger.info(f"Data already exists: [yellow]{output_path}[/yellow]. Skipping.")
+            logger.info(f"Data already exists: {output_path}. Skipping.")
             return output_path
 
-        # データ取得
-        # api_client.py 側の retry ロジックが効いているから、ここではシンプルに呼ぶだけ。
         response = await self.client.fetch_meeting_by_id(issue_id)
         if not response:
-            logger.error(f"Failed to fetch data for ID: [bold red]{issue_id}[/bold red]")
+            logger.error(f"Failed to fetch data for ID: {issue_id}")
             return None
 
-        # JSONLとして書き込み
-        # MeetingResponse を丸ごと1行のJSONにする。
         with open(output_path, "w", encoding="utf-8") as f:
-            # model_dump_json() を使って Pydantic モデルを JSON 文字列に変換
-            # by_alias=True を忘れちゃダメよ。APIのキー名（CamelCase）を尊重するの。
             f.write(response.model_dump_json(by_alias=True) + "\n")
 
-        logger.info(f"Successfully saved data to: [bold green]{output_path}[/bold green]")
+        logger.info(f"Successfully saved: {output_path}")
         return output_path
 
     async def crawl_range(self, from_date: str, to_date: str):
         """
-        特定の期間の会議データを一括でクロールし、保存する。
-        (1億件スケールのためのクロールロジックのプレースホルダー)
+        特定の期間の会議データを全件取得し、1会議1ファイルで保存する。
         """
-        # TODO: 期間を指定してループを回し、全会議を JSONL 化する。
-        pass
+        logger.info(f"Starting crawl from {from_date} to {to_date}")
+        
+        count = 0
+        async for record in self.client.stream_meetings(from_date, to_date):
+            issue_id = record.issue_id
+            output_path = settings.RAW_DATA_DIR / f"{issue_id}.jsonl"
+
+            if output_path.exists():
+                logger.info(f"Skipping existing record: {issue_id}")
+                continue
+
+            # 会議1件分のレスポンス形式をモックして保存
+            mock_response = MeetingResponse(
+                number_of_records=1,
+                meeting_records=[record]
+            )
+
+            with open(output_path, "w", encoding="utf-8") as f:
+                f.write(mock_response.model_dump_json(by_alias=True) + "\n")
+            
+            count += 1
+            logger.info(f"Saved meeting: {issue_id} (Total: {count})")
+
+        logger.info(f"Crawl finished. Total new records saved: {count}")

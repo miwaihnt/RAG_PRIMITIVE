@@ -48,6 +48,16 @@
 
 ---
 
-## 5. 次の検証ステップ (Next Actions)
-1. 35,152件のデータに対して `IVF_HNSW_PQ` を張り、`IVF_PQ` との精度・速度差を計測する。
-2. `nprobes` を変更し、探索精度がどう改善するかを評価する。
+## 6. バッチサイズ最適化実験 (Batch Size Optimization)
+
+1億件スケールに向けた Embedding 処理の高速化を目的とし、バッチサイズによるスループットの変化を測定する。
+
+### 6.1. 実験結果ログ
+
+| Date | Total Chunks | BATCH_SIZE | Embedding Time (s) | Throughput (chunks/sec) | Notes |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| 2026-04-21 | 35,056 | **64** | **955.51 s** | **36.69** | ベースライン（M4 MPS使用） |
+
+---
+
+## 7. 分析と考察 (Analysis & Insights)

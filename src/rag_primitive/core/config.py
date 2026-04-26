@@ -14,8 +14,8 @@ class Settings(BaseSettings):
     TARGET_ISSUE_ID: str = ""
 
     # 範囲取得
-    from_date: str = "2024-01-01"
-    to_date: str = "2024-03-31"
+    from_date: str = "2023-01-11"
+    to_date: str = "2023-01-21"
 
     # Embedding Settings
     EMBEDDING_MODEL_NAME: str = "intfloat/multilingual-e5-small"

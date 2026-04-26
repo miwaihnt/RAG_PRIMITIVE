@@ -6,52 +6,36 @@
 ## 🎯 プロジェクトゴール
 - **短期目標**: 特定の会議を Unit of Work として End-to-End で処理し、LanceDB へ格納する。
 - **長期目標**: 1,000万〜1億件のチャンクを $O(1)$ の空間計算量で処理し、インデックス構築のトレードオフを定量化する。
+- **Advanced Goal**: ハイブリッド検索（ベクトル + BM25）とリランキングによる、商用レベルの検索精度とスケーラビリティの両立。
 
 ---
 
 ## 📈 全体進捗 (Milestones)
 
-- [x] **Phase 0: Architecture & Environment**
-    - [x] アーキテクチャ設計 (v1.1 in `ARCH_DESIGN.md`)
-    - [x] `uv` によるモダンな開発環境の構築 (`pyproject.toml`, `.venv`)
-- [x] **Phase 1: Acquisition (Data Lake Construction)**
-    - [x] 国会会議録 API クローラーの実装 (Rate Limit / Retry 考慮)
-    - [x] 非同期ジェネレータによるストリーミング取得の実装
-    - [x] 「1会議1ファイル」形式による粒度の細かいべき等性の担保
-- [x] **Phase 2: Processing (Streaming Pipeline)**
-    - [x] 再帰的チャンキング (Recursive Character Text Splitter) の実装
-    - [x] ローカルモデル (multilingual-e5-small) による Embedding
-    - [x] ディレクトリベースの複数ファイル一括処理の実装
-    - [x] PULL 型バックプレッシャー制御 (Generator による遅延評価)
-- [x] **Phase 3: Storage (LanceDB Integration)**
-    - [x] LanceDB テーブルの作成とスキーマ定義 (item 規格の完全一致)
-    - [x] ディレクトリ内の全 Parquet からのインポート (Zero-copy Join)
-    - [x] Content-based Addressing によるべき等性の担保 (Upsert 実装)
-- [x] **Phase 4: Optimization & Benchmarking**
-    - [x] 期間指定による実データのバルクロード（3.5万件規模）の成功
-    - [x] Flat vs HNSW vs IVF-PQ のベンチマーク計測 (3.5万件でインデックスが優位に)
-    - [x] 空間/時間計算量の実測報告作成 (`BENCHMARK_REPORT.md`)
-- [x] **Phase 5: Search & Verification (Bonus)**
-    - [x] ベクトル検索インターフェース (`search.py`) の実装
-    - [x] 検索疎通確認 (実際のクエリに対する top-k 結果の取得成功)
-- [ ] **Phase 6: Scalability & Parallelization**
-    - [ ] `ProcessPoolExecutor` による Chunker の CPU 並列化
-    - [ ] **Embedding の並列化・高速化 (最大のボトルネック: 97.4% の時間を消費)**
-    - [ ] タスクキュー (Worker モデル) による分散パイプラインの構築
-    - [ ] ベクトル書き出しのストリーミング化 (`Incremental Append`)
+- [x] **Phase 0-6: Foundations & Streaming Pipeline (STEP 1)**
+    - [x] アーキテクチャ設計とモダンな開発環境 (`uv`) の構築
+    - [x] ストリーミング・クローラーの実装
+    - [x] 空間計算量 $O(B)$ を維持した増分書き出し (`Incremental Append`)
+    - [x] `asyncio.Queue` による並行ワーカーモデル（Acquisition/Chunk/Embed/Store）の構築
+    - [x] 3.5万件規模でのインデックス特性（IVF-PQ vs HNSW）の検証
+
+- [ ] **Phase 7: Hybrid Search & Reranking (STEP 2)**
+    - [ ] **BM25 (Full Text Search) の実装**: 特定キーワードへの再現率（Recall）向上
+    - [ ] **RRF (Reciprocal Rank Fusion) の統合**: ベクトルスコアと単語スコアの公平な融合
+    - [ ] **Cohere Rerank の導入**: 二段階検索（Retrieve & Re-rank）による精度極大化
+    - [ ] **性能・レイテンシ評価**: ハイブリッド化による精度の向上幅と計算コストの定量化
 
 ---
 
-## 🛠️ 現在の作業 (Current Task)
-**Phase 6: Scalability & Parallelization**
-- 3.5万件の検証により、Embedding 処理が全体の 97% 以上を占める圧倒的なボトルネックであることが判明。
-- **Next Step**: 1億件達成（推定 31日間）を現実的な時間（数日以内）に短縮するため、Embedding のバッチサイズ最適化および並列化戦略を立案・実装する。
+## 🛠️ 現在의 作業 (Current Task)
+**Phase 7: Hybrid Search & Reranking**
+- **Goal**: ベクトル検索の弱点である「固有名詞・特定キーワード」への弱さを、BM25 全文検索の統合により克服する。
+- **Current Task**: `rank_bm25` ライブラリの導入と、LanceDB または Parquet からの BM25 インデックス構築戦略の立案。
+- **Next Step**: RRF スコアリングロジックの自作による、ハイブリッド検索エンジンのプロトタイプ作成。
 
 ---
 
 ## 📝 決定事項 & ログ
 - **2026-04-01**: プロジェクト開始。`uv` を採用。
-- **2026-04-13**: Phase 5 完了。`search.py` によるベクトル検索の成功を確認。
-- 2026-04-16: **Architecture v1.1 到達。** ストリーミング・パイプライン実装。
-- 2026-04-16: **Phase 4 完了。** 3.5万件規模でのインデックス特性を実測。Flat 検索（0.027s）に対し、IVF_HNSW_PQ（0.012s）の優位性を実証。Embedding が 902s かかる最大ボトルネックであることを数値で特定。
-
+- 2026-04-23: **Phase 6 完了。** ワーカーモデルへの移行により、E2E ストリーミング処理を達成。
+- 2026-04-23: **STEP 2 (Phase 7) 開始。** マネージド SaaS の内部ロジックを理解するため、ハイブリッド検索の自作フェーズへ移行。
